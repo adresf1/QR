@@ -1,0 +1,14 @@
+cmake_minimum_required(VERSION 3.10)
+project(QRScanner)
+
+set(CMAKE_CXX_STANDARD 17)
+
+include_directories(${PROJECT_SOURCE_DIR}/libs/include)
+link_directories(${PROJECT_SOURCE_DIR}/libs/lib)
+
+add_executable(QRScanner main.cpp)
+
+target_link_libraries(QRScanner
+    opencv_world4120
+    zbar
+)
