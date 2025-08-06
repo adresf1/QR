@@ -1,39 +1,59 @@
-// main.cpp
-#include <opencv2/opencv.hpp>
-#include <zbar.h>
-#include <iostream>
+#include "main.h"
+#include "string.h"
 
-int main() {
-    cv::VideoCapture cap(0);
-    if (!cap.isOpened()) {
-        std::cerr << "Kan ikke åbne kameraet.\n";
-        return -1;
+#define FRAME_WIDTH  320
+#define FRAME_HEIGHT 240
+#define FRAME_SIZE   (FRAME_WIDTH * FRAME_HEIGHT)
+
+extern UART_HandleTypeDef huart3;
+extern DCMI_HandleTypeDef hdcmi;
+extern DMA_HandleTypeDef hdma_dcmi;
+
+uint8_t framebuffer[FRAME_SIZE];
+uint8_t rxBuf[100];
+
+void take_snapshot() {
+    HAL_DCMI_Start_DMA(&hdcmi, DCMI_MODE_SNAPSHOT, (uint32_t)framebuffer, FRAME_SIZE / 4);
+    while (HAL_DCMI_GetState(&hdcmi) != HAL_DCMI_STATE_READY);
+}
+
+void send_frame_to_pc() {
+    const char* header = "<IMG_START>\n";
+    const char* footer = "\n<IMG_END>\n";
+
+    HAL_UART_Transmit(&huart3, (uint8_t*)header, strlen(header), HAL_MAX_DELAY);
+
+    // Send billedet i blokke af fx 1024 bytes
+    for (uint32_t i = 0; i < FRAME_SIZE; i += 1024) {
+        uint32_t chunk = (FRAME_SIZE - i < 1024) ? FRAME_SIZE - i : 1024;
+        HAL_UART_Transmit(&huart3, &framebuffer[i], chunk, HAL_MAX_DELAY);
     }
 
-    zbar::ImageScanner scanner;
-    scanner.set_config(zbar::ZBAR_NONE, zbar::ZBAR_CFG_ENABLE, 1);
+    HAL_UART_Transmit(&huart3, (uint8_t*)footer, strlen(footer), HAL_MAX_DELAY);
+}
 
-    while (true) {
-        cv::Mat frame, gray;
-        cap >> frame;
-        if (frame.empty()) break;
+void receive_qr_result() {
+    memset(rxBuf, 0, sizeof(rxBuf));
+    HAL_UART_Receive(&huart3, rxBuf, sizeof(rxBuf), HAL_MAX_DELAY);
+    printf("QR Result: %s\r\n", rxBuf); // vis QR-data
+}
 
-        cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-        zbar::Image image(gray.cols, gray.rows, "Y800", gray.data, gray.total());
+int main(void)
+{
+    HAL_Init();
+    SystemClock_Config();
+    MX_GPIO_Init();
+    MX_USART3_UART_Init();  // UART til PC
+    MX_DCMI_Init();         // Kamera
+    MX_DMA_Init();          // DMA til DCMI
 
-        int n = scanner.scan(image);
+    HAL_Delay(2000); // Giv WSL tid til at starte server
 
-        for (auto symbol = image.symbol_begin(); symbol != image.symbol_end(); ++symbol) {
-            std::string data = symbol->get_data();
-            std::cout << "QR Code: " << data << std::endl;
-            cv::putText(frame, data, {10, 30}, cv::FONT_HERSHEY_SIMPLEX, 1.0, {0, 255, 0}, 2);
-        }
-
-        cv::imshow("QR Scanner", frame);
-        if (cv::waitKey(1) == 27) break; // ESC afslutter
+    while (1)
+    {
+        take_snapshot();
+        send_frame_to_pc();
+        receive_qr_result();
+        HAL_Delay(500); // 2 FPS
     }
-
-    cap.release();
-    cv::destroyAllWindows();
-    return 0;
 }
