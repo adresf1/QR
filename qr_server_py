@@ -1,0 +1,51 @@
+import serial
+import time
+import numpy as np
+import cv2
+import subprocess
+
+# Tilpas port til COM-port (COM5 = /dev/ttyS4)
+ser = serial.Serial('/dev/ttyS4', 115200, timeout=1)
+
+def receive_image():
+    print("Venter på billede...")
+    img_data = bytearray()
+
+    # Vent på start
+    while True:
+        line = ser.readline().decode(errors='ignore').strip()
+        if line == "<IMG_START>":
+            break
+
+    # Læs billeddata
+    while True:
+        chunk = ser.read(1024)
+        if b"<IMG_END>" in chunk:
+            img_data += chunk.split(b"<IMG_END>")[0]
+            break
+        img_data += chunk
+
+    print(f"Billede modtaget: {len(img_data)} bytes")
+    return img_data
+
+def save_and_scan(img_data):
+    # Konverter til numpy + billedfil
+    try:
+        frame = np.frombuffer(img_data, dtype=np.uint8).reshape((240, 320))
+        cv2.imwrite("frame.jpg", frame)
+
+        # Scan med ZBar
+        result = subprocess.run(['zbarimg', 'frame.jpg'], stdout=subprocess.PIPE)
+        output = result.stdout.decode().strip()
+        return output if output else "NO_QR_FOUND"
+    except Exception as e:
+        print("Fejl:", e)
+        return "CONVERSION_ERROR"
+
+# MAIN LOOP
+print("QR-server kører...")
+while True:
+    img = receive_image()
+    qr_result = save_and_scan(img)
+    print(f"QR: {qr_result}")
+    ser.write((qr_result + "\n").encode())
