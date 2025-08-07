@@ -1,59 +1,69 @@
-#include "main.h"
-#include "string.h"
 
-#define FRAME_WIDTH  320
-#define FRAME_HEIGHT 240
-#define FRAME_SIZE   (FRAME_WIDTH * FRAME_HEIGHT)
 
-extern UART_HandleTypeDef huart3;
-extern DCMI_HandleTypeDef hdcmi;
-extern DMA_HandleTypeDef hdma_dcmi;
-
-uint8_t framebuffer[FRAME_SIZE];
-uint8_t rxBuf[100];
-
-void take_snapshot() {
-    HAL_DCMI_Start_DMA(&hdcmi, DCMI_MODE_SNAPSHOT, (uint32_t)framebuffer, FRAME_SIZE / 4);
-    while (HAL_DCMI_GetState(&hdcmi) != HAL_DCMI_STATE_READY);
-}
-
-void send_frame_to_pc() {
-    const char* header = "<IMG_START>\n";
-    const char* footer = "\n<IMG_END>\n";
-
-    HAL_UART_Transmit(&huart3, (uint8_t*)header, strlen(header), HAL_MAX_DELAY);
-
-    // Send billedet i blokke af fx 1024 bytes
-    for (uint32_t i = 0; i < FRAME_SIZE; i += 1024) {
-        uint32_t chunk = (FRAME_SIZE - i < 1024) ? FRAME_SIZE - i : 1024;
-        HAL_UART_Transmit(&huart3, &framebuffer[i], chunk, HAL_MAX_DELAY);
-    }
-
-    HAL_UART_Transmit(&huart3, (uint8_t*)footer, strlen(footer), HAL_MAX_DELAY);
-}
-
-void receive_qr_result() {
-    memset(rxBuf, 0, sizeof(rxBuf));
-    HAL_UART_Receive(&huart3, rxBuf, sizeof(rxBuf), HAL_MAX_DELAY);
-    printf("QR Result: %s\r\n", rxBuf); // vis QR-data
-}
-
-int main(void)
+//funktionen til scan fra bufferen
+ void ScanQRCodeFromBuffer(void)
 {
-    HAL_Init();
-    SystemClock_Config();
-    MX_GPIO_Init();
-    MX_USART3_UART_Init();  // UART til PC
-    MX_DCMI_Init();         // Kamera
-    MX_DMA_Init();          // DMA til DCMI
+    const int width = 640;
+    const int height = 480;
 
-    HAL_Delay(2000); // Giv WSL tid til at starte server
-
-    while (1)
-    {
-        take_snapshot();
-        send_frame_to_pc();
-        receive_qr_result();
-        HAL_Delay(500); // 2 FPS
+    quirc_t *qr = quirc_new();
+    if (!qr) {
+        printf("Could not allocate QR decoder\r\n");
+        return;
     }
+
+    if (quirc_resize(qr, width, height) < 0) {
+        printf("Failed to resize QR decoder\r\n");
+        quirc_destroy(qr);
+        return;
+    }
+
+    // Step 1: få pointer til framebuffer og konverter til grayscale
+    uint8_t *gray = quirc_begin(qr, NULL, NULL);
+    uint8_t *src = (uint8_t *)BUFFER_ADDRESS;
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int index = (y * width + x) * 2;
+            uint16_t pixel = src[index] | (src[index + 1] << 8);
+
+            uint8_t r = (pixel >> 11) & 0x1F;
+            uint8_t g = (pixel >> 5) & 0x3F;
+            uint8_t b = pixel & 0x1F;
+
+            // Grayscale-konvertering (simple version)
+            uint8_t gray_value = (r << 3) * 0.3 + (g << 2) * 0.59 + (b << 3) * 0.11;
+            gray[y * width + x] = gray_value;
+        }
+    }
+
+    quirc_end(qr);
+
+    // Step 2: detect og decode
+    int count = quirc_count(qr);
+    printf("QR codes found: %d\r\n", count);
+
+    for (int i = 0; i < count; i++) {
+        struct quirc_code code;
+        struct quirc_data data;
+
+        quirc_extract(qr, i, &code);
+        if (quirc_decode(&code, &data) == QUIRC_SUCCESS) {
+            printf("QR DECODED: %s\r\n", data.payload);
+        } else {
+            printf("QR decode failed\r\n");
+        }
+    }
+
+    quirc_destroy(qr);
 }
+
+//i løkken:
+if (ISP_BackgroundProcess(&hcamera_isp) != ISP_OK)
+{
+    BSP_LED_Toggle(LED_RED);
+}
+
+ScanQRCodeFromBuffer();
+
+HAL_Delay(1000);  // valgfrit delay
